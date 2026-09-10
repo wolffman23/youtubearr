@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -94,6 +95,27 @@ class Plugin:
                 {"value": "480p", "label": "480p"},
             ],
             "help_text": "Preferred quality for ingested streams",
+        },
+        {
+            "id": "relay_enabled",
+            "label": "Use YouTubarr Relay",
+            "type": "boolean",
+            "default": False,
+            "help_text": "Store created streams as internal relay endpoints instead of extracted YouTube URLs.",
+        },
+        {
+            "id": "relay_base_url",
+            "label": "YouTubarr Relay Base URL",
+            "type": "string",
+            "default": "http://youtubarr-relay:8788",
+            "help_text": "Internal URL of the session-owning relay. Used only when relay mode is enabled.",
+        },
+        {
+            "id": "relay_stream_profile_name",
+            "label": "YouTubarr Relay Stream Profile",
+            "type": "string",
+            "default": "Proxy",
+            "help_text": "Dispatcharr profile for the relay's local MPEG-TS output.",
         },
         {
             "id": "auto_cleanup",
@@ -1733,7 +1755,9 @@ class Plugin:
         # decide whether the Stream needs the canonical watch URL (Streamlink) or
         # the raw extracted URL (Proxy/other profiles).
         stream_profile = self._select_stream_profile(settings)
-        playback_url = self._get_playback_url(metadata, stream_profile, settings)
+        playback_url = self._get_playback_url(
+            metadata, stream_profile, settings, monitored_channel_id=monitored_channel_id
+        )
 
         # Create Stream (use video thumbnail for stream logo)
         stream = Stream.objects.create(
@@ -2286,6 +2310,13 @@ class Plugin:
         Args:
             settings: Plugin settings dict. If stream_profile_name is set, use that profile.
         """
+        if settings and settings.get("relay_enabled"):
+            relay_profile_name = settings.get("relay_stream_profile_name", "Proxy").strip()
+            profile = StreamProfile.objects.filter(name__iexact=relay_profile_name).first()
+            if not profile:
+                raise RuntimeError(f"Relay stream profile '{relay_profile_name}' was not found")
+            return profile
+
         # Check for user-configured profile name first
         if settings:
             profile_name = settings.get("stream_profile_name", "").strip()
@@ -2342,7 +2373,14 @@ class Plugin:
         except Exception:
             return False
 
-    def _get_playback_url(self, metadata: Dict[str, Any], profile: Any, settings: Optional[Dict[str, Any]] = None) -> str:
+    def _relay_source_key(self, source: str) -> str:
+        """Return a stable, non-reversible relay key for a monitored source."""
+        normalized = source.strip().lower()
+        if not normalized:
+            raise RuntimeError("Relay mode requires a monitored channel source")
+        return "yt-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+    def _get_playback_url(self, metadata: Dict[str, Any], profile: Any, settings: Optional[Dict[str, Any]] = None, monitored_channel_id: str = "") -> str:
         """Return the URL to store on the Stream for the given metadata and StreamProfile.
 
         Streamlink resolves YouTube playback itself, so it must be given the stable
@@ -2354,6 +2392,13 @@ class Plugin:
         sidecar so the existing Dispatcharr StreamProfile parameters can opt into
         `--http-cookies-file` without exposing raw cookie content on the command line.
         """
+        if settings and settings.get("relay_enabled"):
+            source = monitored_channel_id or metadata.get("youtube_channel_id", "")
+            relay_base_url = settings.get("relay_base_url", "").strip().rstrip("/")
+            if not relay_base_url:
+                raise RuntimeError("Relay mode requires relay_base_url")
+            return f"{relay_base_url}/v1/streams/{self._relay_source_key(source)}.ts"
+
         is_streamlink = self._profile_name_is_streamlink(getattr(profile, "name", ""))
         cookies_required = self._cookies_are_configured(settings)
         if is_streamlink and cookies_required and not self._sync_cookies_sidecar(settings):

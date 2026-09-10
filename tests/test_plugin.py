@@ -2017,6 +2017,26 @@ class TestGetPlaybackUrl(unittest.TestCase):
         result = p._get_playback_url(metadata, profile)
         self.assertEqual(result, expiring_url)
 
+    def test_relay_mode_uses_deterministic_local_endpoint_not_extracted_url(self):
+        p = _make_plugin()
+        profile = MagicMock()
+        profile.name = "Proxy"
+        result = p._get_playback_url(
+            {"stream_url": "https://googlevideo.com/expiring"},
+            profile,
+            {"relay_enabled": True, "relay_base_url": "http://youtubarr-relay:8788"},
+            monitored_channel_id="@ExampleSource",
+        )
+        self.assertEqual(result, "http://youtubarr-relay:8788/v1/streams/yt-46112c531b0e37ca.ts")
+        self.assertNotIn("googlevideo", result)
+
+    def test_relay_mode_rejects_missing_source(self):
+        p = _make_plugin()
+        profile = MagicMock()
+        profile.name = "Proxy"
+        with self.assertRaises(RuntimeError):
+            p._get_playback_url({}, profile, {"relay_enabled": True, "relay_base_url": "http://relay"})
+
 
 class TestGetCookiesFile(unittest.TestCase):
 
