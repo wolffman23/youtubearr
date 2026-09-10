@@ -3021,6 +3021,33 @@ class Plugin:
         now = datetime.now(dt_timezone.utc)
         refreshed_count = 0
 
+        # Relay mode owns upstream resolution. Migrate only plugin-tracked live
+        # rows to their stable internal endpoints before considering expiry.
+        if settings.get("relay_enabled"):
+            relay_profile = self._select_stream_profile(settings)
+            for video_id, stream_data in tracked_streams.items():
+                if not stream_data.get("is_live"):
+                    continue
+                source = stream_data.get("monitored_channel_id") or stream_data.get("youtube_channel_id")
+                if not source:
+                    self._log_error(f"Skipping relay migration for {video_id}: no monitored channel identity")
+                    continue
+                try:
+                    stream = Stream.objects.get(id=stream_data["stream_id"])
+                    new_url = self._get_playback_url({}, relay_profile, settings, monitored_channel_id=source)
+                    changed = stream.url != new_url or stream.stream_profile_id != relay_profile.id
+                    if changed:
+                        stream.url = new_url
+                        stream.stream_profile_id = relay_profile.id
+                        stream.save(update_fields=["url", "stream_profile"])
+                        refreshed_count += 1
+                    stream_data["stream_url"] = new_url
+                    stream_data["last_url_refresh"] = now.isoformat()
+                except Stream.DoesNotExist:
+                    self._log_error(f"Stream {stream_data['stream_id']} not found")
+            self._persist_settings({"tracked_streams": tracked_streams})
+            return refreshed_count
+
         for video_id, stream_data in tracked_streams.items():
             if not stream_data.get("is_live"):
                 continue
