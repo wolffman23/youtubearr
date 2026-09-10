@@ -1781,23 +1781,17 @@ class Plugin:
         except Exception:
             pass  # custom_properties field may not exist on this Dispatcharr version
 
-        # Relay output is already a local MPEG-TS stream. Do not attach the
-        # custom M3U account: its account-level profile overrides the explicit
-        # relay Proxy profile during Dispatcharr playback.
-        if not settings.get("relay_enabled"):
-            try:
-                m3u_account = self._get_custom_m3u_account()
-                if m3u_account is not None:
-                    stream.is_custom = True
-                    stream.m3u_account = m3u_account
-                    stream.save(update_fields=['is_custom', 'm3u_account'])
-            except Exception:
-                pass  # Fields may not exist on this Dispatcharr version
-
-        # Dispatcharr may auto-assign its custom M3U account during Stream.save().
-        # Relay streams must bypass that account-level profile override.
-        if settings.get("relay_enabled") and hasattr(stream, "m3u_account_id"):
-            Stream.objects.filter(id=stream.id).update(m3u_account=None)
+        # Dispatcharr needs its built-in custom M3U account to select an active
+        # connection profile. The separate stream/channel Proxy profile still
+        # controls relay playback behavior.
+        try:
+            m3u_account = self._get_custom_m3u_account()
+            if m3u_account is not None:
+                stream.is_custom = True
+                stream.m3u_account = m3u_account
+                stream.save(update_fields=['is_custom', 'm3u_account'])
+        except Exception:
+            pass  # Fields may not exist on this Dispatcharr version
 
         # Get or create channel group
         group_name = settings.get("channel_group_name", self._channel_group_name)
@@ -3049,6 +3043,7 @@ class Plugin:
         # rows to their stable internal endpoints before considering expiry.
         if settings.get("relay_enabled"):
             relay_profile = self._select_stream_profile(settings)
+            relay_account = self._get_custom_m3u_account()
             for video_id, stream_data in tracked_streams.items():
                 if not stream_data.get("is_live"):
                     continue
@@ -3059,20 +3054,20 @@ class Plugin:
                 try:
                     stream = Stream.objects.get(id=stream_data["stream_id"])
                     new_url = self._get_playback_url({}, relay_profile, settings, monitored_channel_id=source)
-                    changed = stream.url != new_url or stream.stream_profile_id != relay_profile.id or getattr(stream, "m3u_account_id", None) is not None
+                    account_id = relay_account.id if relay_account is not None else None
+                    changed = (
+                        stream.url != new_url
+                        or stream.stream_profile_id != relay_profile.id
+                        or getattr(stream, "m3u_account_id", None) != account_id
+                    )
                     if changed:
-                        stream.url = new_url
-                        stream.stream_profile_id = relay_profile.id
-                        # The custom M3U account's effective profile overrides Proxy.
-                        # Keep this custom stream but clear only the account association.
+                        # Keep the custom account for Dispatcharr's active connection
+                        # selection; the explicit Proxy profile controls relay output.
+                        update_fields = {"url": new_url, "stream_profile_id": relay_profile.id}
                         if hasattr(stream, "m3u_account_id"):
-                            # Stream.save() may restore Dispatcharr's custom account.
-                            # This scoped update clears only the plugin-tracked relay row.
-                            Stream.objects.filter(id=stream.id).update(
-                                url=new_url, stream_profile_id=relay_profile.id, m3u_account=None
-                            )
-                        else:
-                            stream.save(update_fields=["url", "stream_profile"])
+                            update_fields["m3u_account"] = relay_account
+                            update_fields["is_custom"] = True
+                        Stream.objects.filter(id=stream.id).update(**update_fields)
                         refreshed_count += 1
                     stream_data["stream_url"] = new_url
                     stream_data["last_url_refresh"] = now.isoformat()
