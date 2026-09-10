@@ -3045,8 +3045,11 @@ class Plugin:
                         # The custom M3U account's effective profile overrides Proxy.
                         # Keep this custom stream but clear only the account association.
                         if hasattr(stream, "m3u_account_id"):
-                            stream.m3u_account = None
-                            stream.save(update_fields=["url", "stream_profile", "m3u_account"])
+                            # Stream.save() may restore Dispatcharr's custom account.
+                            # This scoped update clears only the plugin-tracked relay row.
+                            Stream.objects.filter(id=stream.id).update(
+                                url=new_url, stream_profile_id=relay_profile.id, m3u_account=None
+                            )
                         else:
                             stream.save(update_fields=["url", "stream_profile"])
                         refreshed_count += 1
