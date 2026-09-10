@@ -1781,15 +1781,18 @@ class Plugin:
         except Exception:
             pass  # custom_properties field may not exist on this Dispatcharr version
 
-        # Associate stream with custom M3U account for correct playback routing
-        try:
-            m3u_account = self._get_custom_m3u_account()
-            if m3u_account is not None:
-                stream.is_custom = True
-                stream.m3u_account = m3u_account
-                stream.save(update_fields=['is_custom', 'm3u_account'])
-        except Exception:
-            pass  # Fields may not exist on this Dispatcharr version
+        # Relay output is already a local MPEG-TS stream. Do not attach the
+        # custom M3U account: its account-level profile overrides the explicit
+        # relay Proxy profile during Dispatcharr playback.
+        if not settings.get("relay_enabled"):
+            try:
+                m3u_account = self._get_custom_m3u_account()
+                if m3u_account is not None:
+                    stream.is_custom = True
+                    stream.m3u_account = m3u_account
+                    stream.save(update_fields=['is_custom', 'm3u_account'])
+            except Exception:
+                pass  # Fields may not exist on this Dispatcharr version
 
         # Get or create channel group
         group_name = settings.get("channel_group_name", self._channel_group_name)
@@ -3035,11 +3038,17 @@ class Plugin:
                 try:
                     stream = Stream.objects.get(id=stream_data["stream_id"])
                     new_url = self._get_playback_url({}, relay_profile, settings, monitored_channel_id=source)
-                    changed = stream.url != new_url or stream.stream_profile_id != relay_profile.id
+                    changed = stream.url != new_url or stream.stream_profile_id != relay_profile.id or getattr(stream, "m3u_account_id", None) is not None
                     if changed:
                         stream.url = new_url
                         stream.stream_profile_id = relay_profile.id
-                        stream.save(update_fields=["url", "stream_profile"])
+                        # The custom M3U account's effective profile overrides Proxy.
+                        # Keep this custom stream but clear only the account association.
+                        if hasattr(stream, "m3u_account_id"):
+                            stream.m3u_account = None
+                            stream.save(update_fields=["url", "stream_profile", "m3u_account"])
+                        else:
+                            stream.save(update_fields=["url", "stream_profile"])
                         refreshed_count += 1
                     stream_data["stream_url"] = new_url
                     stream_data["last_url_refresh"] = now.isoformat()
