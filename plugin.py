@@ -2594,9 +2594,25 @@ class Plugin:
                         metadata = self._extract_stream_metadata(video_id, quality, settings)
 
                         if not metadata:
-                            self._log_error(f"Failed to extract metadata for {video_id} - yt-dlp returned None")
-                            self._extraction_failures[video_id] = time.time()
-                            continue
+                            if settings.get("relay_enabled"):
+                                # Relay mode never stores or needs yt-dlp's temporary playback URL.
+                                # Phase 2 already confirmed this video is live; use its scan metadata
+                                # to create the stable relay-backed Dispatcharr row.
+                                metadata = {
+                                    "video_id": video_id,
+                                    "title": stream_info.get("title", "YouTube Live"),
+                                    "thumbnail": stream_info.get("thumbnail", ""),
+                                    "channel_thumbnail": "",
+                                    "youtube_channel_id": channel_id,
+                                    "youtube_channel_name": username.lstrip("@"),
+                                    "stream_url": "",
+                                    "is_live": True,
+                                }
+                                self._log(f"Relay mode: creating {video_id} from confirmed scan metadata")
+                            else:
+                                self._log_error(f"Failed to extract metadata for {video_id} - yt-dlp returned None")
+                                self._extraction_failures[video_id] = time.time()
+                                continue
 
                         if metadata.get("_members_only"):
                             self._log(f"Skipping {video_id}: members-only content (retry in 7 days)")
