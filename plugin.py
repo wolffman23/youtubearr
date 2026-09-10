@@ -1794,6 +1794,11 @@ class Plugin:
             except Exception:
                 pass  # Fields may not exist on this Dispatcharr version
 
+        # Dispatcharr may auto-assign its custom M3U account during Stream.save().
+        # Relay streams must bypass that account-level profile override.
+        if settings.get("relay_enabled") and hasattr(stream, "m3u_account_id"):
+            Stream.objects.filter(id=stream.id).update(m3u_account=None)
+
         # Get or create channel group
         group_name = settings.get("channel_group_name", self._channel_group_name)
         group, _ = ChannelGroup.objects.get_or_create(name=group_name)
